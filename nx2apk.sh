@@ -97,6 +97,10 @@ build() {
     say "Translating shaders to Vulkan"
     local glslc; glslc=$(ls "$NDK"/shader-tools/*/glslc 2>/dev/null | head -1 || true); [ -x "$glslc" ] || die "glslc not found in the NDK ($NDK)"
     GLSLC=$glslc SPIRV_CROSS=$(command -v "${SPIRV_CROSS:-spirv-cross}") "$PY" "$HERE/dm/android/tools/vk_sh_build.py" "$WORK/shpkg" "$WORK/vksh" | tail -2
+    if [ -f "$HERE/dm/games/$tid/prompts.tsv" ]; then
+        say "Xbox button prompts"
+        rm -rf "$WORK/texpatch"; "$PY" "$HERE/dm/android/tools/prompts.py" "$HERE/dm/games/$tid/prompts.tsv" "$WORK/texpatch"
+    fi
     say "Building the APK"
     mkdir -p "$HERE/dm/android/build"
     rm -f "$HERE/dm/android/build/icon.png"; if [ -f "$WORK/icon.png" ]; then cp "$WORK/icon.png" "$HERE/dm/android/build/icon.png"; fi
@@ -116,6 +120,8 @@ install() {
     "$adb" shell mkdir -p "$APPDIR/mods" "$APPDIR/vksh"
     "$adb" push "$WORK/mods/." "$APPDIR/mods/" | tail -1
     "$adb" push "$WORK"/vksh/*.spv "$WORK/vksh/vk_shaders.tsv" "$APPDIR/vksh/" | tail -1
+    "$adb" shell rm -rf "$APPDIR/texpatch"
+    if [ -d "$WORK/texpatch" ]; then "$adb" shell mkdir -p "$APPDIR/texpatch"; "$adb" push "$WORK/texpatch/." "$APPDIR/texpatch/" | tail -1; fi
     if [ -d "$WORK/romfs" ]; then
         say "Copying the game files (this takes a while)"
         "$adb" shell mkdir -p "$ROMFS_DEV"

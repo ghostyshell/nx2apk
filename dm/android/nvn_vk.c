@@ -459,6 +459,11 @@ static uint8_t *stage_alloc(size_t n, VkBuffer *buf, VkDeviceSize *off) {
 enum { STREAM_AFTER = 8, STREAM_RECHECK = 600 };   // STREAM_RECHECK submissions later it is tracked again, so a texture that settles stops being uploaded
 static uint64_t g_sub_n;   // submissions begun
 static uint64_t g_cur_job;   // the job the replay thread is running (OP_FENCE_SYNC)
+// Texture patches (texpatch.c): an RGBA8 level is passed to tex_patch after it is decoded into staging, by the hash of its source bytes
+void tex_patch(uint64_t hash, uint32_t lv, uint32_t w, uint32_t h, uint8_t *rgba, size_t pitch);
+int tex_patch_wants(uint32_t lv, uint32_t w, uint32_t h);
+static uint64_t fnv64(const uint8_t *p, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull; return h; }
+static int rgba8(VkFormat f) { return f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_R8G8B8A8_SRGB; }   // patches are RGBA
 static void tex_upload(vtex *x) {
     int cw = atomic_exchange(&x->cpu_written, 0);
     if (cw) x->gpu = 0;
@@ -509,8 +514,10 @@ static void tex_upload(vtex *x) {
                     }
                 }
                 reg = (VkBufferImageCopy){off, bx * 4, by * 4, {x->aspect, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
+                if (opx == 4 && rgba8(x->f.vk) && ly == 0 && z == 1 && tex_patch_wants(lv, w, h)) tex_patch(fnv64(lin, raw, 0xcbf29ce484222325ull ^ lv), lv, w, h, d, dpitch);
             } else {
-                n = raw; memcpy(stage_alloc(raw, &sb, &off), lin, raw);
+                n = raw; uint8_t *d = stage_alloc(raw, &sb, &off); memcpy(d, lin, raw);
+                if (bpb == 4 && bw == 1 && rgba8(x->f.vk) && ly == 0 && z == 1 && tex_patch_wants(lv, w, h)) tex_patch(fnv64(lin, raw, 0xcbf29ce484222325ull ^ lv), lv, w, h, d, pitch);
                 reg = (VkBufferImageCopy){off, bx * bw, by * bh, {x->aspect, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             }
             vkCmdCopyBufferToImage(g_pre, sb, x->img, VK_IMAGE_LAYOUT_GENERAL, 1, &reg);

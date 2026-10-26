@@ -111,21 +111,35 @@ Your keys never go to the phone, and `extract` deletes its temporary copy of the
 **Touch.** The left half of the screen is a stick that appears where you put your thumb. The right half has the
 four face buttons around a centre point, the top corners are L and R, and the top middle is + (pause).
 
-**Controller.** Any Bluetooth or USB controller Android recognises works. Buttons are mapped **by position**, so
-they sit where a Switch controller has them: on an Xbox controller the bottom button (A) is the Switch's bottom
-button (B). If you would rather press the button whose letter the game shows, map them **by letter** instead (see
-below). In both layouts the bumpers are L / R, the triggers ZL / ZR, Menu is +, View or Back is -, and the sticks
-and D-pad work as expected.
+**Controller.** Any Bluetooth or USB controller Android recognises works, and the game is set up for an **Xbox-style
+controller** by default:
+
+- Buttons are mapped **by letter**: Xbox A acts as the Switch's A, so when the game says "Press the A Button", you
+  press A.
+- The button pictures on the Controls screens (including their EXIT prompt) are redrawn with Xbox A / B / X / Y
+  buttons in Xbox colours. The button art is [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts) (CC0), stored in
+  `dm/third_party/kenney_input_prompts/`; the phone paints it over the game's own pictures as they load, so nothing from
+  the game leaves the phone.
+  The tiny letters inside the drawing of the Switch on the Controls screen stay as they are.
+- The bumpers are L / R, the triggers ZL / ZR, Menu is +, View or Back is -, and the sticks and D-pad work as
+  expected.
+
+To play with Switch-style buttons instead (buttons by position, so the bottom button is the Switch's B, and the
+original pictures), set `DM_PAD_LAYOUT=switch` (see below).
+
+**Screen shape.** The game is drawn at the Switch's 16:9 shape and scaled to fill your screen's height, with narrow
+black bars at the sides on taller phones (19:9 and wider). Rendering it wider is not possible: Devil May Cry stretches
+its picture, movies included, to whatever shape it is given instead of showing more.
 
 **Options.** Create a text file `Android/data/dev.nxandroid.dmc/files/env.txt` on the phone with one setting per
 line, then restart the app:
 
 | Setting | Effect |
 | --- | --- |
-| `DM_PAD_LAYOUT=label` | Controller buttons by letter (Xbox A is Switch A) instead of by position |
+| `DM_PAD_LAYOUT=switch` | Switch-style buttons: mapped by position (the bottom button is the Switch's B) and the game's original button pictures |
 | `DM_OPMODE=1` | The Switch's docked mode: sharper (1600x900) but too heavy to hold 60 fps on most phones in busy scenes |
 
-For example, from the Mac: `adb shell 'echo DM_PAD_LAYOUT=label > /sdcard/Android/data/dev.nxandroid.dmc/files/env.txt'`
+For example, from the Mac: `adb shell 'echo DM_PAD_LAYOUT=switch > /sdcard/Android/data/dev.nxandroid.dmc/files/env.txt'`
 
 ## Troubleshooting
 
@@ -177,4 +191,6 @@ Bundled third-party code, each with its license in its folder (`dm/third_party/R
 the Ryujinx shader translator (MIT) and the .NET libraries shipped with its prebuilt build in
 `dm/gfx/tools/dmsh_xlate_bin/` (MsgPack, Humanizer, System.CodeDom, under their own licenses, as in upstream nxnative), libvpx (BSD 3-Clause), stb_vorbis (MIT or public domain), bcdec (MIT or
 Unlicense), Vulkan-Headers (Apache-2.0 or MIT), NVIDIA FLIP (BSD 3-Clause), deko3d's texture layout code (zlib) and
-parts of MacNativeGames (MIT).
+parts of MacNativeGames (MIT), and four Xbox button pictures from [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts)
+(CC0, by [Kenney](https://www.kenney.nl), copied from the [tanuki-billie/kenney-input-prompts](https://github.com/tanuki-billie/kenney-input-prompts)
+mirror; details in `dm/third_party/kenney_input_prompts/README.md`).

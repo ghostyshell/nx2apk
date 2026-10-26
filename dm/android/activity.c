@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include "../host/dm_input.h"
@@ -29,7 +30,7 @@ static void env_file(void) {
     FILE *f = fopen(p, "r"); if (!f) return;
     char ln[1024];
     while (fgets(ln, sizeof ln, f)) {
-        ln[strcspn(ln, "\r\n")] = 0;
+        ln[strcspn(ln, "\r\n")] = 0; for (size_t k = strlen(ln); k && (ln[k - 1] == ' ' || ln[k - 1] == '\t'); ) ln[--k] = 0;   // trailing blanks
         char *eq = strchr(ln, '='); if (!eq || ln[0] == '#') continue;
         *eq = 0; setenv(ln, eq + 1, 1);
     }
@@ -57,11 +58,12 @@ static void *host_thread(void *arg) {
 }
 
 // ---------- Input ----------
-// Face buttons: by position by default (Android's A, the bottom button of an Xbox-style controller, is the Switch's bottom button B), so the buttons sit where a Switch
-// controller has them; DM_PAD_LAYOUT=label maps by letter instead (Xbox A is Switch A), matching the letters in the game's prompts
+// Face buttons: by letter by default (Android's A, an Xbox controller's A, is the Switch's A), so the game's prompts ("A Button") name the button to press, and its button
+// pictures are redrawn as Xbox ones (texpatch, below). DM_PAD_LAYOUT=switch maps by position instead (the bottom button is the Switch's bottom button B) and keeps the
+// Switch pictures
 static uint64_t g_keys, g_hat, g_touch_btn; static float g_ax[8]; static int32_t g_touch_lx, g_touch_ly;
 static uint64_t key_btn(int32_t k) {
-    static int label = -1; if (label < 0) { const char *e = getenv("DM_PAD_LAYOUT"); label = e && !strcmp(e, "label"); }
+    static int label = -1; if (label < 0) { const char *e = getenv("DM_PAD_LAYOUT"); label = !(e && !strcasecmp(e, "switch")); }
     switch (k) {
         case AKEYCODE_BUTTON_A: return label ? DM_BTN_A : DM_BTN_B; case AKEYCODE_BUTTON_B: return label ? DM_BTN_B : DM_BTN_A;
         case AKEYCODE_BUTTON_X: return label ? DM_BTN_X : DM_BTN_Y; case AKEYCODE_BUTTON_Y: return label ? DM_BTN_Y : DM_BTN_X;
@@ -171,6 +173,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(g_int, sizeof g_int, "%s", a->internalDataPath);
     mkdir(g_ext, 0700);
     env_file();   // before either thread starts: the input thread reads DM_PAD_LAYOUT, the host the rest (its defaults above do not overwrite these)
+    { const char *l = getenv("DM_PAD_LAYOUT"); char p[600]; snprintf(p, sizeof p, "%s/texpatch", g_ext); if (!(l && !strcasecmp(l, "switch"))) setenv("DM_TEXPATCH", p, 0); }   // Xbox button pictures
     pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 16 << 20);
     pthread_create(&th, NULL, input_thread, NULL); pthread_detach(th);
     pthread_create(&th, &at, host_thread, NULL); pthread_detach(th);

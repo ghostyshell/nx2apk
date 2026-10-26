@@ -22,7 +22,7 @@ for f in "$DM"/host/main.c "$DM"/host/loader.c "$DM"/host/hle.c "$DM"/host/crash
     case "$(basename "$f")" in hle_movie_avc.c) ;; *) SRC+=("$f") ;; esac
 done
 SRC+=("$DM"/gfx/hle_nv.c "$DM"/gfx/hle_vi.c "$DM"/gfx/nvn/hle_nvn.c "$DM"/gfx/nvn/nvn_tex.c "$DM"/gfx/nvn/nvn_dirty.c "$DM"/gfx/tex/nvn_deswizzle.c)
-SRC+=("$HERE"/compat.c "$HERE"/movie_avc_mc.c "$HERE"/aconv_mc.c "$HERE"/front_android.c "$HERE"/nvn_${NVN_BACKEND:-vk}.c "$HERE"/host_android.c)
+SRC+=("$HERE"/compat.c "$HERE"/movie_avc_mc.c "$HERE"/aconv_mc.c "$HERE"/texpatch.c "$HERE"/front_android.c "$HERE"/nvn_${NVN_BACKEND:-vk}.c "$HERE"/host_android.c)
 SRC+=("$HERE"/gen/entry.S "$HERE"/gen/nvn_entry.S "$HERE"/gen/nvn_thunks.S)
 [ "${APK:-0}" = 1 ] && SRC+=("$HERE"/activity.c)
 
