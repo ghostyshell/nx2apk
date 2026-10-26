@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Devil May Cry (the Switch build) as a NativeActivity: no Java code, the host in libdm.so (activity.c) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.nxandroid.dmc" android:versionCode="1" android:versionName="0.1">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <application android:label="Devil May Cry" android:hasCode="false" android:debuggable="true" android:isGame="true" android:appCategory="game"
+                 android:requestLegacyExternalStorage="true" android:extractNativeLibs="true">
+        <activity android:name="android.app.NativeActivity" android:exported="true" android:screenOrientation="sensorLandscape"
+                  android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen" android:launchMode="singleTask">
+            <meta-data android:name="android.app.lib_name" android:value="dm" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

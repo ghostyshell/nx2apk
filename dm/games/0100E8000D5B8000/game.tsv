@@ -1,0 +1,33 @@
+# Devil May Cry (Switch, 2019; Capcom's "Barashi" port of the PS2 game, SDK 6.4.2), base game v0.
+# main loads the PS2 data files (dmc1/pld, emd, fsd, ...) with a .prd suffix and draws through NVN (181 of the 512 NVN functions it loads are called).
+# subsdk0 is NVIDIA's multimedia library (H.264 / AAC decoders) behind the movie player; the cutscenes are dmc1/video/*.mp4.
+# Values copied from other profiles are not measured for this game yet
+
+# ---- Identity ----
+title_id	0100E8000D5B8000
+program_id	0100E8000D5B8000
+
+# ---- App ----
+name	Devil May Cry
+pad_layout	full
+
+# ---- Versions ----
+build	v0	1.0.0	main=883f54c67475abae9611355f210059f8	subsdk0=16577266bb9797abf6029f85025f6d35	sdk=184751379007f9c50fc96ba4d26a5dca
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	data/dmc1/pld/pl00.pld
+
+# ---- Memory ----
+# The NPDM declares no system resource (META +0x14 = 0): the game uses SetHeapSize. Partition values as Hades until measured
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- Shaders ----
+# All 81 BNSH stages are embedded in main
+shader_groups	main=main
+shader_note	Devil May Cry: BNSH embedded in main
