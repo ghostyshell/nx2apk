@@ -125,7 +125,9 @@ HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as th
 static unsigned char g_cpu_oc;
 HLE_FORCE("_ZN2nn2oe21IsCpuOverclockEnabledEv", "CPU overclock state (through apm): what SetCpuOverclockEnabled set, off at start", unsigned, h_oe_CpuOc, void) { return g_cpu_oc; }
 HLE_FORCE("_ZN2nn2oe22SetCpuOverclockEnabledEb", "CPU overclock switch (through apm); the host does not scale clocks", void, h_oe_SetCpuOc, unsigned on) { g_cpu_oc = on & 0xff; }
-HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld", void, h_oe_DefRes, int *w, int *h) {
+HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld; DM_DISPLAY=<w>x<h> overrides it (a 4:3 panel)", void, h_oe_DefRes, int *w, int *h) {
+    const char *e = getenv("DM_DISPLAY"); int ow, oh;
+    if (e && sscanf(e, "%dx%d", &ow, &oh) == 2 && ow > 0 && oh > 0) { if (w) *w = ow; if (h) *h = oh; return; }
     int con = opmode() == 1; if (w) *w = con ? 1920 : 1280; if (h) *h = con ? 1080 : 720;
 }
 HLE_FORCE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", "default display resolution change event: bound, never signaled (the operation mode notification carries the change)",

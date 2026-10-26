@@ -127,9 +127,11 @@ controller** by default:
 To play with Switch-style buttons instead (buttons by position, so the bottom button is the Switch's B, and the
 original pictures), set `DM_PAD_LAYOUT=switch` (see below).
 
-**Screen shape.** The game is drawn at the Switch's 16:9 shape and scaled to fill your screen's height, with narrow
-black bars at the sides on taller phones (19:9 and wider). Rendering it wider is not possible: Devil May Cry stretches
-its picture, movies included, to whatever shape it is given instead of showing more.
+**Screen shape.** The game is drawn at the Switch's 16:9 shape and scaled to fit your screen, with black bars where
+the shapes differ (at the sides on taller phones, above and below on a 4:3 panel). Rendering it wider is not
+possible: Devil May Cry stretches its picture, movies included, to whatever shape it is given instead of showing
+more. `DM_SCALE` fills the screen anyway (see Options): `fill` stretches the 16:9 picture onto the whole panel,
+`crop` fills it keeping the shape and trims the sides.
 
 **Options.** Create a text file `Android/data/dev.nxandroid.dmc/files/env.txt` on the phone with one setting per
 line, then restart the app:
@@ -138,6 +140,9 @@ line, then restart the app:
 | --- | --- |
 | `DM_PAD_LAYOUT=switch` | Switch-style buttons: mapped by position (the bottom button is the Switch's B) and the game's original button pictures |
 | `DM_OPMODE=1` | The Switch's docked mode: sharper (1600x900) but too heavy to hold 60 fps on most phones in busy scenes |
+| `DM_SCALE=fill` | Stretch the picture onto the whole screen: a 4:3 panel gets a 4:3 picture (33% taller) |
+| `DM_SCALE=crop` | Fill the screen keeping the shape, trimming 12.5% from each side on a 4:3 panel |
+| `DM_DISPLAY=<w>x<h>` | Report this display resolution to the game (a game that sizes its render to it follows; DMC ignores it) |
 
 For example, from the Mac: `adb shell 'echo DM_PAD_LAYOUT=switch > /sdcard/Android/data/dev.nxandroid.dmc/files/env.txt'`
 

@@ -6,7 +6,9 @@
 #   adb push <rewritten modules>/. /sdcard/Android/data/dev.nxandroid.dmc/files/mods/
 #   adb push <vk_sh_build.py output>/. /sdcard/Android/data/dev.nxandroid.dmc/files/vksh/
 # App icon: build/icon.png when present (game data, kept out of git): the game's own icon from its control NCA (icon_AmericanEnglish.dat, a 256x256 JPEG;
-#   sips -s format png icon_AmericanEnglish.dat --out build/icon.png). An adaptive icon: the picture inset to the part every launcher mask shows, on black
+#   sips -s format png icon_AmericanEnglish.dat --out build/icon.png). build/icon_cropped.png, when present, is used instead (the same art cropped inward,
+#   e.g. to Dante, so the door frame the square crop cuts at the left and right is out of the picture). The adaptive icon insets the art 16.7% of the
+#   layer's 1.5x bounds, which is the visible tile: full art, only the mask's corners clipped
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 export JAVA_HOME=${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}; export PATH="$JAVA_HOME/bin:$PATH"
@@ -15,13 +17,19 @@ GAME=${GAME:-0100E8000D5B8000} APK=1 bash "$HERE/build.sh"
 W=$HERE/build/apk; rm -rf "$W"; mkdir -p "$W/lib/arm64-v8a"
 cp "$HERE/build/libdm.so" "$W/lib/arm64-v8a/"
 MAN=$HERE/apk/AndroidManifest.xml; RES=()
-if [ -f "$HERE/build/icon.png" ]; then
-    R=$W/res; mkdir -p "$R/mipmap-xxxhdpi" "$R/drawable-nodpi" "$R/mipmap-anydpi-v26"
-    cp "$HERE/build/icon.png" "$R/mipmap-xxxhdpi/ic_launcher.png"; cp "$HERE/build/icon.png" "$R/drawable-nodpi/ic_art.png"
+if [ -f "$HERE/build/icon.png" ] || [ -f "$HERE/build/icon_cropped.png" ]; then
+    R=$W/res; mkdir -p "$R/mipmap-xxxhdpi" "$R/drawable-nodpi" "$R/drawable" "$R/mipmap-anydpi-v26" "$R/values"
+    ART=$HERE/build/icon_cropped.png; [ -f "$ART" ] || ART=$HERE/build/icon.png
+    cp "$ART" "$R/mipmap-xxxhdpi/ic_launcher.png"; cp "$ART" "$R/drawable-nodpi/ic_art.png"
+    printf '<resources><color name="icon_bg">#391219</color></resources>\n' > "$R/values/colors.xml"
+    cat > "$R/drawable/ic_foreground.xml" <<'X'
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_art" android:inset="16.7%" />
+X
     cat > "$R/mipmap-anydpi-v26/ic_launcher.xml" <<'X'
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@android:color/black" />
-    <foreground><inset android:drawable="@drawable/ic_art" android:inset="16.7%" /></foreground>
+    <background android:drawable="@color/icon_bg" />
+    <foreground android:drawable="@drawable/ic_foreground" />
 </adaptive-icon>
 X
     "$BT/aapt2" compile --dir "$R" -o "$W/res.zip"; RES=(-R "$W/res.zip" --auto-add-overlay)

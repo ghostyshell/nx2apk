@@ -96,6 +96,7 @@ static void out_format(mavc *a) {
 // Collect the pictures the decoder has ready (wait up to timeout_us for the first); returns 1 at the end of the stream
 static int drain(mavc *a, int64_t timeout_us) {
     for (;;) {
+        if (a->nq >= QMAX) return 0;   // no room: leave the decoder's pictures queued for the next take (dropping the oldest skipped the next frame to show)
         AMediaCodecBufferInfo bi;
         ssize_t i = AMediaCodec_dequeueOutputBuffer(a->mc, &bi, timeout_us);
         if (i == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) { out_format(a); continue; }
@@ -106,7 +107,6 @@ static int drain(mavc *a, int64_t timeout_us) {
         size_t sz; uint8_t *buf = AMediaCodec_getOutputBuffer(a->mc, (size_t)i, &sz);
         int end = (bi.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
         if (buf && bi.size > 0) {
-            if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
             int cw = a->crop[2], ch = a->crop[3], cx = a->crop[0], cy = a->crop[1];
             uint8_t *d = malloc((size_t)cw * ch * 3 / 2 + cw); if (!d) die("movie: picture allocation failed");
             const uint8_t *y = buf + bi.offset, *c = y + (size_t)a->stride * a->slice;
@@ -145,6 +145,9 @@ int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
             AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)pts_us, 0);
             break;
         }
+        // drain() stops pulling at the queue cap, so the codec can end up holding every output buffer and refuse input.
+        // Drop the oldest picture then (a display frame, not the access unit: dropping the unit would break the reference chain), so drain can release one and go on
+        if (a->nq >= QMAX) { free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); if (!a->red++) LOG("[RED] movie: AVC picture queue full while the decoder needs input, dropping the oldest picture"); }
         drain(a, 0);   // no input buffer free: the decoder waits for its output to be taken
         if (tries > 500) { if (!a->red++) LOG("[RED] movie: AVC decoder takes no input"); return -1; }
     }

@@ -344,6 +344,40 @@ static void au_close(void *g, void *lr) {
     au_info(g, ch, STATE_STOPPED);
 }
 HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "close the audio output", void, h_au_Close, void *g) { au_close(g, __builtin_return_address(0)); }
+// Flush (audout flush): drop the blocks not played yet and hand them back through the released queue, as the device does. This must be a takeover: the SDK's own
+// body looks the output up in a registry that only its own OpenAudioOut fills (the host takes that open over), misses, and loads a vtable through the null result:
+// SIGSEGV at sdk+0x93684 (DMC flushes its movie audio after StopAudioOut when the title movie is cut short by +)
+static unsigned au_flush_at(void *g, void *lr) {
+    aout *a = ao(g);
+    unsigned any = 0;
+    pthread_mutex_lock(&g_aos_lock);
+    int live = 0; for (int i = 0; i < AOMAX; i++) if (g_aos[i] == a) { live = 1; break; }
+    if (!live) { pthread_mutex_unlock(&g_aos_lock); return 0; }   // a concurrent Close took the output out of the registry; a may be freed after it unlocks
+    int was = a->backend;                          // restart the same consumer: a silent sink standing in for a stalled AudioUnit must not re-probe it
+    if (was != BK_NONE) backend_stop(a);           // sync stop: no reader is left inside pull()
+    pthread_mutex_lock(&a->m);
+    uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed), head0 = qh;
+    uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
+    uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
+    uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
+    uint32_t room = RELMAX - (rw - rr);
+    for (; qh != qt && room; qh++, rw++, room--, any++) a->rel[rw & (RELMAX - 1)] = a->q[qh & (QMAX - 1)];   // the partially played block at q_head included
+    atomic_store_explicit(&a->rel_tail, rw, memory_order_release);
+    atomic_store_explicit(&a->q_head, qh, memory_order_release);   // blocks that did not fit stay pending rather than vanishing (RELMAX == QMAX makes this unreachable in practice)
+    if (qh != head0 || qh == qt) a->pos = 0;       // a moved block or an empty queue; otherwise the partially played head keeps its position
+    pthread_mutex_unlock(&a->m);
+    if (was != BK_NONE && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) {   // a flush while playing keeps playing
+        if (was == BK_AU && a->au && !g_suspended) au_go(a, now_ns()); else null_start(a);
+    }
+    if (any) {   // inside g_aos_lock: CloseAudioOut may free a as soon as the lock is dropped
+        if (a->event) notify_release(a); if (a->rel_sem) dispatch_semaphore_signal(a->rel_sem);
+        if (a->nlog < 32) { char b[64]; a->nlog++; LOG("audio #%d Flush: %u buffers discarded (call site %s)", a->id, any, site(lr, b, sizeof b)); }
+    }
+    pthread_mutex_unlock(&g_aos_lock);
+    return any ? 1u : 0u;
+}
+HLE_FORCE("_ZN2nn5audio20FlushAudioOutBuffersEPNS0_8AudioOutE", "discard the buffers not yet played; the SDK's own version null-derefs on a host-opened output",
+          unsigned, h_au_Flush, void *g) { return au_flush_at(g, __builtin_return_address(0)); }
 HLE_FORCE("_ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE", "playback state", int, h_au_State, const void *g) { return atomic_load_explicit(&ao(g)->state, memory_order_acquire); }
 // Pokémon Legends: Z-A (SDK 19): Wwise's sink wakeup thread (main+0x30faae8) asks after every release event and marks the sink starved at 0; the SDK's own version read the audout session the host never made
 HLE_FORCE("_ZN2nn5audio22GetAudioOutBufferCountEPKNS0_8AudioOutE", "buffers appended and not yet played to the end (the one playing included)", unsigned, h_au_BufCount, const void *g) {

@@ -308,7 +308,20 @@ OSStatus AudioUnitInitialize(AudioUnit u) {
     return r == AAUDIO_OK ? noErr : (OSStatus)r;
 }
 OSStatus AudioOutputUnitStart(AudioUnit u) { return u->s && AAudioStream_requestStart(u->s) == AAUDIO_OK ? noErr : -1; }
-OSStatus AudioOutputUnitStop(AudioUnit u) { return u->s && AAudioStream_requestStop(u->s) == AAUDIO_OK ? noErr : -1; }
+OSStatus AudioOutputUnitStop(AudioUnit u) {
+    if (!u->s || AAudioStream_requestStop(u->s) != AAUDIO_OK) return -1;
+    // Apple's AudioOutputUnitStop returns once the callback has stopped; AAudio's requestStop is asynchronous and keeps calling back until STOPPING ends.
+    // The host relies on the synchronous form: FlushAudioOutBuffers rewrites the queues right after StopAudioOut.
+    // Wait in 5 ms slices, re-reading the state each time (waitForStateChange reports TIMEOUT for a slice that simply did not change); give up after 100 ms,
+    // which the caller holds under g_aos_lock and the watchdog needs every 50 ms
+    for (int i = 0; i < 20; i++) {
+        aaudio_stream_state_t st = AAudioStream_getState(u->s);
+        if (st == AAUDIO_STREAM_STATE_STOPPED || st == AAUDIO_STREAM_STATE_CLOSED) break;
+        aaudio_stream_state_t next;
+        AAudioStream_waitForStateChange(u->s, st, &next, 5000000);   // timeout just means another slice is needed
+    }
+    return noErr;
+}
 OSStatus AudioUnitUninitialize(AudioUnit u) { if (u->s) { AAudioStream_close(u->s); u->s = NULL; } return noErr; }
 OSStatus AudioComponentInstanceDispose(AudioUnit u) { if (u) { AudioUnitUninitialize(u); free(u); } return noErr; }
 uint64_t dm_mach_absolute_time(void) { return mach_absolute_time(); }   // called from the converted assembly (elfasm.py)

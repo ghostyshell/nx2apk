@@ -17,6 +17,12 @@
 #include <sys/stat.h>
 #include "../host/dm_input.h"
 
+// The host's lifecycle entry points (hle_oe.c / hle_nvn.c), the same round trip the Mac and iOS front ends run on focus loss and minimize
+void dm_focus_set(int st);
+void dm_audio_suspend(int on);
+void guest_clock_freeze_for(int reason, int on);
+void dm_gfx_suspend(int on);
+
 int main(int argc, char **argv);   // host/main.c
 void dm_vk_set_window(ANativeWindow *w);   // nvn_vk.c
 __attribute__((visibility("default"))) ANativeWindow *dm_android_window;
@@ -35,6 +41,7 @@ static void env_file(void) {
         *eq = 0; setenv(ln, eq + 1, 1);
     }
     fclose(f);
+    __android_log_print(ANDROID_LOG_INFO, "dm", "env.txt %s: DM_SCALE=%s", p, getenv("DM_SCALE") ? getenv("DM_SCALE") : "(unset)");
 }
 static void *host_thread(void *arg) {
     (void)arg;
@@ -69,6 +76,7 @@ static uint64_t key_btn(int32_t k) {
         case AKEYCODE_BUTTON_X: return label ? DM_BTN_X : DM_BTN_Y; case AKEYCODE_BUTTON_Y: return label ? DM_BTN_Y : DM_BTN_X;
         case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
         case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: case AKEYCODE_BACK: return DM_BTN_MINUS;
+        case AKEYCODE_PLUS: return DM_BTN_PLUS;   // a keyboard's + presses the Switch's + (START); the handheld's Start button is bound to Home by its firmware
         case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS;
         case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT; case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN;
     }
@@ -148,6 +156,9 @@ static void *input_thread(void *arg) {
 }
 
 // ---------- Activity callbacks ----------
+// Background / foreground: without this the game kept rendering and playing music behind the launcher until the app was swiped away
+static void on_pause(ANativeActivity *a) { (void)a; dm_focus_set(2); dm_focus_set(3); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); }
+static void on_resume(ANativeActivity *a) { (void)a; dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_focus_set(2); dm_focus_set(1); }
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; dm_vk_set_window(w); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; dm_vk_set_window(NULL); }
 static void on_queue_created(ANativeActivity *a, AInputQueue *q) {
@@ -164,6 +175,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     (void)saved; (void)n;
     a->callbacks->onNativeWindowCreated = on_window_created;
     a->callbacks->onNativeWindowDestroyed = on_window_destroyed;
+    a->callbacks->onPause = on_pause;
+    a->callbacks->onResume = on_resume;
     a->callbacks->onInputQueueCreated = on_queue_created;
     a->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     a->callbacks->onDestroy = on_destroy;

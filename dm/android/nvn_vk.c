@@ -1518,6 +1518,8 @@ static void present_now(const tex_t *t, const int crop[4]) {
     if (!x) { pthread_mutex_unlock(&g_mu); return; }
     if (&dm_android_window == NULL) { pthread_mutex_unlock(&g_mu); shot(x); return; }   // the command-line build: no window
     swapchain_make();
+    static uint32_t lw, lh, lsw, lsh;
+    if (x->w != lw || x->h != lh || g_sc_w != lsw || g_sc_h != lsh) { lw = x->w; lh = x->h; lsw = g_sc_w; lsh = g_sc_h; LOG("[vk] present %ux%u, surface %ux%u", lw, lh, lsw, lsh); }
     if (!g_sc) { pthread_mutex_unlock(&g_mu); return; }
     int si = g_sem_i; g_sem_i = (g_sem_i + 1) % 8;
     uint32_t idx; VkResult ar = vkAcquireNextImageKHR(g_dev, g_sc, 1000000000ull, g_acq[si], VK_NULL_HANDLE, &idx);
@@ -1536,9 +1538,19 @@ static void present_now(const tex_t *t, const int crop[4]) {
     VkClearColorValue black = {{0, 0, 0, 1}}; vkCmdClearColorImage(g_cmd, im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr);
     int cx = 0, cy = 0, cw = (int)x->w, ch = (int)x->h;
     if (crop && crop[2] > 0 && crop[3] > 0) { cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3]; }
-    // the game draws landscape; a portrait surface (no rotation in the swapchain) gets it letterboxed
-    double s = (double)g_sc_w / cw < (double)g_sc_h / ch ? (double)g_sc_w / cw : (double)g_sc_h / ch;
-    int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sc_w - dw) / 2, dy = ((int)g_sc_h - dh) / 2;
+    // DM_SCALE=fill stretches the frame onto the whole surface (a 4:3 panel gets a 4:3 picture from the game's 16:9 one);
+    // =crop scales it to cover and takes the centre (no bars, aspect kept, the sides trimmed); unset (or fit) letterboxes it
+    const char *mode = getenv("DM_SCALE");
+    int dw = (int)g_sc_w, dh = (int)g_sc_h, dx = 0, dy = 0;
+    if (mode && !strcmp(mode, "crop")) {
+        double s = (double)g_sc_w / cw > (double)g_sc_h / ch ? (double)g_sc_w / cw : (double)g_sc_h / ch;
+        int sw = (int)((double)g_sc_w / s), sh = (int)((double)g_sc_h / s);
+        cx += (cw - sw) / 2; cy += (ch - sh) / 2; cw = sw; ch = sh;
+    } else if (!(mode && !strcmp(mode, "fill"))) {
+        double s = (double)g_sc_w / cw < (double)g_sc_h / ch ? (double)g_sc_w / cw : (double)g_sc_h / ch;
+        dw = (int)(cw * s); dh = (int)(ch * s); dx = ((int)g_sc_w - dw) / 2; dy = ((int)g_sc_h - dh) / 2;
+    }
+    static int mlog; if (!mlog) { mlog = 1; LOG("[vk] scale '%s': src %d,%d %dx%d -> dst %d,%d %dx%d on %ux%u", mode ? mode : "fit", cx, cy, cw, ch, dx, dy, dw, dh, g_sc_w, g_sc_h); }
     VkImageBlit bl = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
     vkCmdBlitImage(g_cmd, x->img, VK_IMAGE_LAYOUT_GENERAL, im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = 0; b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
