@@ -125,13 +125,24 @@ HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as th
 static unsigned char g_cpu_oc;
 HLE_FORCE("_ZN2nn2oe21IsCpuOverclockEnabledEv", "CPU overclock state (through apm): what SetCpuOverclockEnabled set, off at start", unsigned, h_oe_CpuOc, void) { return g_cpu_oc; }
 HLE_FORCE("_ZN2nn2oe22SetCpuOverclockEnabledEb", "CPU overclock switch (through apm); the host does not scale clocks", void, h_oe_SetCpuOc, unsigned on) { g_cpu_oc = on & 0xff; }
-HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld; DM_DISPLAY=<w>x<h> overrides it (a 4:3 panel)", void, h_oe_DefRes, int *w, int *h) {
-    const char *e = getenv("DM_DISPLAY"); int ow, oh;
-    if (e && sscanf(e, "%dx%d", &ow, &oh) == 2 && ow > 0 && oh > 0) { if (w) *w = ow; if (h) *h = oh; return; }
-    int con = opmode() == 1; if (w) *w = con ? 1920 : 1280; if (h) *h = con ? 1080 : 720;
+// The display the game is told it has: DM_DISPLAY, else the operation mode's default. It is mutable at run time: the replay layer's dynamic resolution
+// re-reports a smaller shape when frames run long and the game, which listens on the change event, rebuilds its render targets from it.
+static int g_dres_w, g_dres_h; static void *g_dres_ev;
+HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld; DM_DISPLAY=<w>x<h> overrides it, and dynamic resolution changes it at run time", void, h_oe_DefRes, int *w, int *h) {
+    if (!g_dres_w || !g_dres_h) {
+        const char *e = getenv("DM_DISPLAY"); int ow, oh;
+        if (e && sscanf(e, "%dx%d", &ow, &oh) == 2 && ow > 0 && oh > 0) { g_dres_w = ow; g_dres_h = oh; }
+        else { int con = opmode() == 1; g_dres_w = con ? 1920 : 1280; g_dres_h = con ? 1080 : 720; }
+    }
+    if (w) *w = g_dres_w; if (h) *h = g_dres_h;
 }
-HLE_FORCE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", "default display resolution change event: bound, never signaled (the operation mode notification carries the change)",
-          void, h_oe_DefResEv, void *ev) { hle_bind_system_event(ev, 0); }
+HLE_FORCE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", "default display resolution change event: bound, and signalled when the host's dynamic resolution changes the reported size",
+          void, h_oe_DefResEv, void *ev) { g_dres_ev = ev; hle_bind_system_event(ev, 0); }
+void dm_oe_set_display(int nw, int nh) {
+    if (nw <= 0 || nh <= 0 || (nw == g_dres_w && nh == g_dres_h)) return;
+    g_dres_w = nw; g_dres_h = nh;
+    if (g_dres_ev) hle_signal_bound_system_event(g_dres_ev);
+}
 HLE_FORCE("_ZN2nn2oe40SendServerMaintenanceOverlayNotificationENS_4time9PosixTimeES2_", "server maintenance overlay (through am); the host has no system overlay", void, h_oe_MaintOverlay, int64_t a, int64_t b) { (void)a; (void)b; }
 // apm performance configurations: Normal 0x00010000 (CPU 1020 / GPU 384 / EMC 1600 MHz, the handheld default), Boost 0x00010001 (GPU 768 MHz, the docked default)
 HLE_FORCE("_ZN2nn2oe27GetPerformanceConfigurationENS0_15PerformanceModeE", "query the CPU/GPU clock config (through apm); reports the default for the mode", int, h_oe_GetPerfCfg, int mode) { return mode == 1 ? 0x00010001 : 0x00010000; }

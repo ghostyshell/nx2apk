@@ -1563,8 +1563,51 @@ static void shot(vtex *x) {
     if (f) { fprintf(f, "P6\n%u %u\n255\n", x->w, x->h); const uint8_t *s = map; for (size_t i = 0; i < (size_t)x->w * x->h; i++) fwrite(s + 4 * i, 1, 3, f); fclose(f); VLOG("frame %llu → %s", (unsigned long long)g_seq, p); }
     vkDestroyBuffer(g_dev, b, NULL); vkFreeMemory(g_dev, m, NULL);
 }
+// Dynamic resolution: the game sizes its render targets from the display resolution it is told and listens on the change event for it, so the host can
+// trade pixels for frame time while the GPU is throttled (an S10e pinned to 377 MHz costs about twice the GPU time of a cool one). The controller watches
+// the interval between presents: above the target the internal resolution steps down 12% at a time, well below it steps back up, one step per window of 64
+// presents, with a floor and hysteresis so it cannot oscillate. DM_DRS=off disables it, DM_DRS_TARGET=<fps> (45) and DM_DRS_MIN=<lines> (480) set the policy.
+enum { DRS_LEVELS = 6, DRS_WIN = 64 };
+static struct { int on, inited, iw, ih, level, min_lines, fast; uint64_t target_ns, last, win[DRS_WIN], n; } g_drs;
+static void drs_init(void) {
+    g_drs.inited = 1; g_drs.on = 1;
+    const char *e = getenv("DM_DRS"); if (e && !strcmp(e, "off")) g_drs.on = 0;
+    e = getenv("DM_DRS_TARGET"); int fps = e ? atoi(e) : 0; g_drs.target_ns = 1000000000ull / (uint64_t)(fps > 0 ? fps : 45);
+    e = getenv("DM_DRS_MIN"); g_drs.min_lines = e && atoi(e) > 0 ? atoi(e) : 480;
+    int w = 0, h = 0; const char *d = getenv("DM_DISPLAY");
+    if (d && sscanf(d, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) { g_drs.iw = w; g_drs.ih = h; }
+    if (!g_drs.iw || !g_drs.ih) g_drs.on = 0;   // the game renders its own size: leave it alone
+}
+static void drs_size(int level, int *w, int *h) {   // level 0 is the size the app chose; each step is 12% smaller, never below the floor
+    double f = 1.0; for (int i = 0; i < level; i++) f *= 0.88;
+    int nh = (int)(g_drs.ih * f + 0.5); if (nh > g_drs.ih) nh = g_drs.ih; if (nh < g_drs.min_lines) nh = g_drs.min_lines;
+    *w = (int)(((long)g_drs.iw * nh / g_drs.ih + 1) & ~1); *h = nh;
+}
+static void drs_tick(void) {
+    if (!g_drs.inited) { drs_init(); if (!g_drs.on) return; }
+    if (!g_drs.on) return;
+    uint64_t t = now_ns(), dt = g_drs.last ? t - g_drs.last : 0; g_drs.last = t;
+    if (!dt) return;
+    if (dt > 250000000ull) dt = 250000000ull;   // a stall (a load, a resume, a shader build) says nothing about the resolution
+    g_drs.win[g_drs.n % DRS_WIN] = dt;
+    if (++g_drs.n < DRS_WIN) return;
+    uint64_t sum = 0; for (int i = 0; i < DRS_WIN; i++) sum += g_drs.win[i];
+    uint64_t avg = sum / DRS_WIN; g_drs.n = 0;
+    int step = 0;
+    if (avg > g_drs.target_ns && g_drs.level < DRS_LEVELS - 1) { step = 1; g_drs.fast = 0; }
+    else if (g_drs.level > 0 && avg * 10 < g_drs.target_ns * 8 && ++g_drs.fast >= 4) { step = -1; g_drs.fast = 0; }
+    else if (avg * 10 >= g_drs.target_ns * 8) g_drs.fast = 0;
+    if (!step) return;
+    int w, h, cw, ch; drs_size(g_drs.level + step, &w, &h); drs_size(g_drs.level, &cw, &ch);
+    if (w == cw && h == ch) return;   // that step changes nothing: the floor
+    g_drs.level += step;
+    LOG("[vk] resolution %dx%d -> %dx%d (%.1f fps, %s)", g_drs.iw, g_drs.ih, w, h, 1e9 / (double)avg,
+        step > 0 ? "below target" : "headroom");
+    dm_oe_set_display(w, h);
+}
 // The present job (the replay thread): t is a copy of the window texture; g_seq is the present's ticket
 static void present_now(const tex_t *t, const int crop[4]) {
+    drs_tick();
     static uint64_t trace_n = 1;   // DM_VK_TRACE=<first>[:<count>]
     if (!g_trace_frame) { const char *e = getenv("DM_VK_TRACE"); g_trace_frame = e ? strtoull(e, NULL, 0) : ~0ull; const char *c = e ? strchr(e, ':') : NULL; if (c) trace_n = strtoull(c + 1, NULL, 0); }
     TR("present texture %llu", (unsigned long long)(t ? t->serial : 0));

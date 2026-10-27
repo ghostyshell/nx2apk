@@ -135,14 +135,17 @@ controller** by default:
 To play with Switch-style buttons instead (buttons by position, so the bottom button is the Switch's B, and the
 original pictures), set `DM_PAD_LAYOUT=switch` (see below).
 
-**Screen shape.** The game runs at your screen's own shape, across the whole panel, the camera cutout included. It asks
-the system for the display resolution and sizes its window, its 3D render target and the present crop from it, so the
-app reports the panel's aspect in the Switch's pixel budget (the handheld mode's 1280x720, the docked 1600x900 with
-`DM_OPMODE=1`). On a 19.5:9 phone that is 1394x660, upscaled to the panel by the present, and 3D scenes fill it.
+**Screen shape.** The game runs at your screen's own shape. It asks the system for the display resolution and sizes
+its window, its 3D render target and the present crop from it, so the app reports the panel's aspect (720 lines, the
+Switch's handheld mode; 1080 with `DM_OPMODE=1`). On a 19.5:9 phone that is 1520x720, and 3D scenes fill it.
 
 The one thing the game keeps fixed is the 3D camera: its projection is 16:9 whatever target it is given, which is
 why a wider picture used to come out stretched by 19% instead of showing more of the world. The host now corrects
 that projection as it replays frames, so 3D scenes show more at the sides and nothing is stretched.
+
+Resolution is dynamic on top of that: the host watches the time between presents and, while frames run long (a throttled GPU, a busy scene),
+reports a smaller display to the game, which rebuilds its render targets smaller and the present upscales. It steps down 12% at a time to a floor
+of 480 lines and climbs back once there is headroom, so the picture stays sharp when the phone is cool and softens only under load.
 
 The game's 2D layer is mostly aspect-aware: the menus and their text keep their shape on a wider screen. What is
 drawn edge to edge is the video: the splash screens and the movie plane fill the whole panel, so on a panel that is
@@ -160,6 +163,9 @@ line, then restart the app:
 | `DM_SCALE=fill` / `crop` | Present-side fallbacks for a panel whose shape the game cannot be given (stretch / fill and trim) |
 | `DM_DISPLAY=<w>x<h>` | Tell the game this display resolution instead of the panel's own shape (the app derives it from the screen; this overrides it) |
 | `DM_ASPECT=off` | Leave the 3D camera at the game's own 16:9 projection (see Screen shape) |
+| `DM_DRS=off` | Keep the internal resolution fixed instead of scaling it to hold the frame rate |
+| `DM_DRS_TARGET=<fps>` | What dynamic resolution aims for (45 by default) |
+| `DM_DRS_MIN=<lines>` | The lowest internal height it drops to (480 by default) |
 
 For example, from the Mac: `adb shell 'echo DM_PAD_LAYOUT=switch > /sdcard/Android/data/dev.nxandroid.dmc/files/env.txt'`
 
