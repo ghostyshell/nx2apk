@@ -46,10 +46,21 @@ that subset.
   - `-O2`.
   Docked mode (1600x900 scene) still drops to about 48 fps in the heaviest scene: GPU-bound.
 
+- Native screen shape (2026-10-27): the game sizes its window, 3D render target and crop from the display resolution the system reports, so the app now
+  reports the panel's own shape (`display_default` in activity.c, from the surface at 720 lines, 1080 with `DM_OPMODE=1`) and the loader rewrites DMC's two
+  baked resolution pairs to it (`dm_resolution_pair_cut`), which makes the scene render 1:1 at the panel and is lighter on the GPU. The camera projection is
+  the one piece the game keeps at 16:9 whatever the target (measured: sx/sy = 1.7778 for every camera; it is not the f32 16:9 constant in main, not the two
+  pairs, and not any other {1600,900} pair in the image), so the replay layer scales the projection's horizontal row to the panel's aspect
+  (`proj_aspect_fix` in nvn_vk.c, `DM_ASPECT=off` to leave it). 3D scenes now show more at the sides instead of stretching 19% on a 19.5:9 panel.
+  Video (splash screens, the movie plane) is still drawn edge to edge by the game and keeps that stretch; the menu layer is aspect-aware.
+
 Open:
 - Objects a command points to (programs, render-target textures) are read when the replay thread reaches it, up to 3 jobs after the submit; fine for DMC
   (it sets them once), see the replay thread comment in nvn_vk.c.
 - Window origin lower left (set at boot before the game switches to upper left) is not implemented; harmless so far.
+- The movie plane is the last stretched surface. DMC uploads the decoded frame into a texture some way the host does not see (not `nvnTextureWriteTexels`
+  with the decoder's buffer, not its frame size, and not native-texture mode), so the replay layer cannot single it out; the full-face quad it draws
+  would otherwise be pillarboxed to the video's shape.
 
 ## Milestones
 

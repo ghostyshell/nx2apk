@@ -28,6 +28,7 @@
 #include <android/native_window.h>
 #include <stdatomic.h>
 #include <libgen.h>
+#include <math.h>
 #define BCDEC_IMPLEMENTATION
 #include "bcdec.h"
 
@@ -962,10 +963,37 @@ static VkDescriptorSet set_alloc(VkDescriptorSetLayout l) {
 }
 // The uniform block bound at (stage, slot), copied once per binding: only the n bytes the shader reads (DMC binds 4 KiB or more per draw and most shaders read 16 vec4s at most),
 //   again (larger) if a later shader reads more of the same binding
+// Native aspect for a 16:9-locked 3D projection: the game sizes its window, scene target and crop from the display, but the camera's projection stays
+// 16:9, so a panel that is not 16:9 stretches 3D horizontally by panel/projection. Scale the projection's horizontal row in the ring copy only (the game's
+// memory stays untouched, so nothing double-applies). Self-calibrating: the projection's aspect is measured from the matrix's row lengths, so a 16:9 panel,
+// an ortho/2D block and any non-camera matrix are left alone. DM_ASPECT=off disables it.
+static int g_aspect_logged;
+static uint32_t g_sc_w, g_sc_h;   // the swap chain's size (tentative: defined with the present code below)
+static void proj_aspect_fix(int st, int reg, uint64_t n, VkDeviceSize off) {
+    static int on = -1; static double target;
+    if (on < 0) { const char *e = getenv("DM_ASPECT"); on = !(e && !strcmp(e, "off")); }
+    if (!target) {   // the display's shape: DM_DISPLAY, else the surface once there is one (both unknown before the first frames)
+        const char *d = getenv("DM_DISPLAY"); int w = 0, h = 0;
+        if (d && sscanf(d, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) target = (double)w / h;
+        else if (g_sc_w && g_sc_h) target = (double)g_sc_w / g_sc_h;
+    }
+    if (!on || !target || st != 0 || reg != 0 || n < 64) return;
+    float *m = (float *)(g_ring_map + off);   // column-major: row r is m[4*i + r] over columns i (the scene VS reads it as _m0[i].xyzw)
+    double x0 = 0, y0 = 0, w0 = 0;
+    for (int i = 0; i < 3; i++) { x0 += (double)m[4 * i] * m[4 * i]; y0 += (double)m[4 * i + 1] * m[4 * i + 1]; w0 += (double)m[4 * i + 3] * m[4 * i + 3]; }
+    x0 = sqrt(x0); y0 = sqrt(y0); w0 = sqrt(w0);
+    if (w0 < 0.99 || w0 > 1.01 || y0 < 1.5 || x0 < 0.5) return;   // w row unit and the scales are large: a perspective camera, not an ortho/2D block
+    double ratio = y0 / x0;
+    if (ratio < 1.70 || ratio > 1.86 || fabs(ratio - target) < 0.01) return;   // not the 16:9-locked one, or the panel already matches it
+    float k = (float)(ratio / target);
+    for (int i = 0; i < 4; i++) m[4 * i] *= k;
+    if (!g_aspect_logged) { g_aspect_logged = 1; LOG("[vk] aspect: 3D projection %.4f -> %.4f, x row scaled by %.4f", ratio, target, k); }
+}
 static VkDeviceSize ubo_ring(int st, int reg, uint64_t n) {
     if (S.ubo[st][reg].copied >= n) return S.ubo[st][reg].ring;
     S.ubo[st][reg].ring = ring_put((const void *)S.ubo[st][reg].addr, n, 256);
     S.ubo[st][reg].copied = n;
+    proj_aspect_fix(st, reg, n, S.ubo[st][reg].ring);
     return S.ubo[st][reg].ring;
 }
 static VkImageView g_dummy_view; static VkSampler g_dummy_samp;
@@ -1215,7 +1243,18 @@ static void walk(const uint8_t *p, int depth) {
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8); if (ad) post_add((post_t){2, NULL, 0, 0, ad, t}); break; }
             case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_cur_job; s->fenced = 1; break; }   // the job number, the fence space mtl_wait takes
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8); if (s && d) { memmove((void *)d, (const void *)s, n); buf_written(d, n); } break; }
-            case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8); if (d) { memcpy((void *)d, (const uint8_t *)a + 16, n); buf_written(d, n); } break; }
+            case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8); if (d) {
+                memcpy((void *)d, (const uint8_t *)a + 16, n); buf_written(d, n);
+                if (g_trace > 1 && n >= 60 && n % 4 == 0) {
+                    const float *f = (const float *)((const uint8_t *)a + 16);
+                    static uint64_t lh; static int ls;
+                    uint64_t h_ = 0; for (int k = 0; k < (int)(n / 4 < 16 ? n / 4 : 16); k++) h_ = h_ * 1000003 + (uint64_t)(float)(int)(f[k] * 997);   // NaN-safe-ish fold
+                    if (ls != g_cur_job || h_ != lh) { lh = h_; ls = g_cur_job;
+                        TR("ub update dst %#llx n %llu: %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g", (unsigned long long)d, (unsigned long long)n,
+                           f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+                    }
+                }
+            } break; }
             case OP_CLEAR_BUF: { const p_clear_buf *cb = a; uint32_t *d = (uint32_t *)cb->addr; for (uint64_t i = 0; d && i < cb->size / 4; i++) d[i] = cb->value; if (d) buf_written(cb->addr, cb->size); break; }
             case OP_SET_RT: { const p_set_rt *r = a;
                 rp_end();
@@ -1253,6 +1292,27 @@ static void walk(const uint8_t *p, int depth) {
             case OP_BIND_UBO: { const p_bind_buf *b = a; int st = b->stage == NVN_SHADER_STAGE_FRAGMENT ? 1 : b->stage == NVN_SHADER_STAGE_VERTEX ? 0 : -1;
                 if (st < 0) { RED1("uniform buffer bound to stage %d", b->stage); break; }
                 if (b->index >= 0 && b->index < 16) { S.ubo[st][b->index].addr = b->addr; S.ubo[st][b->index].size = b->size; S.ubo[st][b->index].copied = 0; S.dirty_set[st] = 1; }
+                if (st == 0 && b->index == 0 && b->addr && S.ubo[0][0].size >= 60) {
+                    // DM_DIRTY_WATCH=1: arm the dirty tracker's write watch on each distinct camera-matrix UBO (the ring has a handful of blocks).
+                    // Armed from the first bind, not only on a traced frame: a diagnostic wants the write that composes the matrix, which happens long before any trace frame
+                    static int watch_on = -1;
+                    if (watch_on < 0) { const char *e_ = getenv("DM_DIRTY_WATCH"); watch_on = e_ && !strcmp(e_, "1"); }
+                    if (watch_on) {
+                        static uint64_t seen[64]; static unsigned nseen;
+                        int have = 0; for (unsigned i = 0; i < nseen; i++) if (seen[i] == b->addr) { have = 1; break; }
+                        if (!have && nseen < 64) { seen[nseen++] = b->addr; dm_dirty_watch_add(b->addr, 64); }
+                    }
+                    if (g_trace > 1) {
+                    const float *f = (const float *)b->addr;   // game memory, readable while the replay window holds it
+                    static uint64_t last_hash; static int last_seen;
+                    uint64_t h_ = 0; for (int k = 0; k < 16; k++) h_ = h_ * 1000003 + (uint64_t)(float)(int)(f[k] * 997);   // NaN-safe-ish fold
+                    if (last_seen != g_seq || h_ != last_hash) {
+                        last_hash = h_; last_seen = g_seq;
+                        TR("ubo vs0 @%#llx (%u): %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g", (unsigned long long)b->addr, b->size,
+                           f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+                    }
+                    }
+                }
                 break; }
             case OP_BIND_TEX: case OP_BIND_TEX1: { p_bind_handles t; const p_bind_handles *b = bind_rec(h.op, a, &t);
                 int st = b->stage == NVN_SHADER_STAGE_FRAGMENT ? 1 : b->stage == NVN_SHADER_STAGE_VERTEX ? 0 : -1;

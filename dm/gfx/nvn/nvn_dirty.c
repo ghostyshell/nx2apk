@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/ucontext.h>
 #include <unistd.h>
 #include <mach/mach_time.h>
 #include <sched.h>
@@ -82,10 +83,95 @@ static int release_page(range_t *r, uintptr_t p, _Atomic uint64_t *count) {
         if (!busy_wait(r, p)) return 0;
     }
 }
+// Write-watch: spans the game (or an env) wants the write PC of. The nvn_vk replay layer adds the camera-matrix UBOs it notices (DM_DIRTY_WATCH=1 enables that);
+// the env form takes <hex addr>+<len>[,...]. The pc / lr print as module offsets, first 40 hits.
+typedef struct { uintptr_t lo, hi; } wspan_t;
+static wspan_t g_watch[96]; static int g_nwatch; static _Atomic int g_watch_hits;   // grown only before the fault loop runs: parse paths are not in the fault handler
+void dm_dirty_watch_add(uintptr_t addr, size_t len) {
+    if (g_nwatch >= (int)(sizeof g_watch / sizeof *g_watch)) return;
+    len = len ? len : 64;
+    if (!nvn_dirty_tracked((void *)addr, len)) {   // outside every pool (the game's own heap): tracking is what lets the page be protection-checked at all
+        LOG("[dirty] watch span %#llx+%#zx is untracked, registering it", (unsigned long long)addr, len);
+        nvn_dirty_add_range((void *)addr, len);
+    }
+    g_watch[g_nwatch].lo = addr; g_watch[g_nwatch].hi = addr + len; g_nwatch++;
+    nvn_dirty_protect((void *)addr, len);   // arm: the next game write faults into on_fault, which releases the page again (the write is re-executed on the spot)
+}
+// Arm a game-side span the diagnostic wants the next writer of, logging what it holds right now (deduplicated per address)
+static void arm_source(uintptr_t src, uint64_t n, const char *what, uintptr_t holder) {
+    static uintptr_t done[16]; static int armed;
+    if (src < 0x10000 || (src & 7) || n < 16 || n > 0x100000 || armed >= 16) return;
+    for (int i = 0; i < armed; i++) if (done[i] == src) return;
+    done[armed++] = src;
+    const float *f = (const float *)src;
+    LOG("[dirty] WATCH follow %s %#llx source %#llx size %#llx: %g %g %g %g", what,
+        (unsigned long long)holder, (unsigned long long)src, (unsigned long long)n, f[0], f[1], f[2], f[3]);
+    dm_dirty_watch_add(src, n < 0x100 ? n : 0x100);
+}
+// DM_WATCH_FOLLOW=<hex offset in main>: the write being reported is the game's uniform upload (the memcpy whose return address is
+// main+<offset>), so the address that matters is not the copy's destination but the game-side source it filled. The uploader keeps its
+// descriptor in x21 (+0x48 source pointer, +0x70 size), so arm that source span and the next write there reports the composer's own pc.
+// DM_WATCH_FOLLOW_COPY=<hex offset>: one link further down, the copier that fills a slot buffer from a payload object in x19 (data at
+// +0x20, size at +0x18): arm that payload and the next write there reports whoever composes the block.
+static void follow_sources(ucontext_t *u, module_t *ml, uint64_t lr) {
+    static uint64_t at = ~0ull, at2 = ~0ull;
+    if (at == ~0ull) {
+        const char *e = getenv("DM_WATCH_FOLLOW"); at = e && *e ? strtoull(e, NULL, 16) : 0;
+        e = getenv("DM_WATCH_FOLLOW_COPY"); at2 = e && *e ? strtoull(e, NULL, 16) : 0;
+    }
+    if (!ml) return;
+    uint64_t off = lr - (uint64_t)ml->base;
+    if (at && off == at) {
+        uintptr_t p = (uintptr_t)DM_UC_X(u, 21);
+        if (p < 0x10000 || (p & 7)) return;
+        const volatile uint8_t *b = (const volatile uint8_t *)p;
+        arm_source((uintptr_t)*(const volatile uint64_t *)(b + 0x48), *(const volatile uint64_t *)(b + 0x70), "descriptor", p);
+    } else if (at2 && off == at2) {
+        uintptr_t p = (uintptr_t)DM_UC_X(u, 19);
+        if (p < 0x10000 || (p & 7)) return;
+        const volatile uint8_t *b = (const volatile uint8_t *)p;
+        arm_source(p + 0x20, *(const volatile uint64_t *)(b + 0x18), "payload", p);
+    }
+}
+static void watch_env(void) {
+    char *save, *tok, buf[512];
+    const char *e = getenv("DM_DIRTY_WATCH_MOD");   // m<hex offset in main>[+<len>][,...]: static spans whose address differs per run
+    if (e) {
+        strlcpy(buf, e, sizeof buf);
+        for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            char *c; uintptr_t off = (uintptr_t)strtoull(tok + 1, &c, 16);
+            size_t len = *c == '+' ? (size_t)strtoull(c + 1, 0, 16) : 64;
+            for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { dm_dirty_watch_add((uintptr_t)g_mod[i].base + off, len); break; }
+        }
+    }
+    e = getenv("DM_DIRTY_WATCH"); if (!e) return;
+    if (e[0] == '1') return;   // =1: the vk layer's own UBO additions
+    strlcpy(buf, e, sizeof buf);
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        char *c; uintptr_t a = (uintptr_t)strtoull(tok, &c, 16);
+        size_t len = *c == '+' ? (size_t)strtoull(c + 1, 0, 16) : 64;
+        dm_dirty_watch_add(a, len);
+    }
+}
+static void watch_report(uintptr_t a, void *uc) {
+    ucontext_t *u = uc;
+    uint64_t pc = DM_UC_PC(u), lr = DM_UC_LR(u);
+    char p[64] = "-", l[64] = "-";
+    module_t *mp = module_of((void *)pc), *ml = module_of((void *)lr);
+    if (mp) snprintf(p, sizeof p, "%s+%#llx", mp->name, (unsigned long long)(pc - (uint64_t)mp->base));
+    if (ml) snprintf(l, sizeof l, "%s+%#llx", ml->name, (unsigned long long)(lr - (uint64_t)ml->base));
+    LOG("[dirty] WATCH write at %#llx pc=%s (%#llx) lr=%s (%#llx)", (unsigned long long)a, p, (unsigned long long)pc, l, (unsigned long long)lr);
+    follow_sources(u, ml, lr);
+}
+
 static int on_fault(void *addr, int is_write, void *uc) {
     (void)uc;
     if (!is_write) return 0;
     uintptr_t a = (uintptr_t)addr; int ours = 0, n = atomic_load(&g_nr);
+    static int env_done;   // the watch list is read once, on the first fault (never the fault path's own setup, so no reentrancy)
+    if (!env_done) { env_done = 1; watch_env(); if (g_nwatch) LOG("[dirty] watching write faults in %d range(s)", g_nwatch); }
+    if (atomic_load(&g_watch_hits) < 40)
+        for (int i = 0; i < g_nwatch; i++) if (a >= g_watch[i].lo && a < g_watch[i].hi) { atomic_fetch_add(&g_watch_hits, 1); watch_report(a, uc); break; }
     for (int i = 0; i < n; i++)   // Every range sharing the page must be released: releasing only one leaves the other range's state at "protected", and later writes no longer fault and are missed
         { range_t *r = rg(i); if (live_at(i) && a >= r->base && a < r->end) ours |= release_page(r, (a - r->base) >> g_shift, &g_faults); }
     return ours;

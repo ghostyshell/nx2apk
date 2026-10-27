@@ -538,6 +538,36 @@ static uint8_t *slurp(const char *path, size_t *n) {
     close(fd); *n = st.st_size; return p;
 }
 
+// Boot cut: a pair of fixed resolution values baked into the game's one-time-init code, rewritten per device (the rewriter's CUTS table only carries fixed bytes).
+// DMC's main (build 883f54c67475abae9611355f210059f8, the init fn at main+0x1e460) writes two static pairs from MOV constants at boot:
+// the reference display pair {1920, 1080} (Orr x11 / movk at main+0x1e4c0 and +0x1e4dc) and the design scene pair {1600, 900} (= 5/6 of the
+// reference: movz x10 #0x640 / movk #0x384 lsl 32 at +0x1e4a0 and +0x1e4a8). The game derives the window, the scene render target and the
+// present crop from these (scene target = display × pair/reference), but NOT the camera projection, which stays 16:9 whatever they say (measured:
+// sx/sy = 1.7778 for every camera after this cut, and patching every other {1600,900} pair in the image changes nothing). With DM_DISPLAY set, both
+// pairs are rewritten to the display itself before the init runs, so the scene renders 1:1 at the panel's shape; the projection's 16:9 is then
+// corrected at replay time (nvn_vk.c proj_aspect_fix).
+static void dm_resolution_pair_cut(module_t *m) {
+    const char *e = getenv("DM_DISPLAY"); int w, h;
+    if (!e || sscanf(e, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0 || w > 0xffff || h > 0xffff) return;
+    if (strcmp(m->name, "main") || strcmp(m->build_id, "883f54c67475abae9611355f210059f8")) return;
+    static const struct { unsigned off; uint32_t orig; const char *what; } site[4] = {
+        {0x1e4a0, 0xd280c80a, "design pair movz x10,#0x640 (1600)"},
+        {0x1e4a8, 0xf2c0708a, "design pair movk x10,#0x384,lsl 32 (900)"},
+        {0x1e4c0, 0xb2190feb, "reference display pair mov x11,#0x78000000780 (1920)"},
+        {0x1e4dc, 0xf2c0870b, "reference display pair movk x11,#0x438,lsl 32 (1080)"},
+    };
+    uint32_t words[4] = {
+        0xD2800000u | ((uint32_t)w << 5) | 10, 0xF2C00000u | ((uint32_t)h << 5) | 10,
+        0xD2800000u | ((uint32_t)w << 5) | 11, 0xF2C00000u | ((uint32_t)h << 5) | 11,
+    };
+    for (int i = 0; i < 4; i++)
+        if (*(uint32_t *)(m->base + site[i].off) != site[i].orig)
+            die("resolution pair cut %d: main%#x holds %#x, expected %#x (%s): the build is not the one this cut was written for",
+                i + 1, site[i].off, *(uint32_t *)(m->base + site[i].off), site[i].orig, site[i].what);
+    for (int i = 0; i < 4; i++) *(uint32_t *)(m->base + site[i].off) = words[i];
+    LOG("resolution pair cut: main's reference {1920,1080} and design {1600,900} pairs rewritten to %dx%d (DM_DISPLAY)", w, h);
+}
+
 // Seal the code area immediately after copying into anonymous pages (16 KB pages): [0, text_end) and the patch area are read-only+execute, and from then on any write to the code area crashes on the spot;
 // what lies between (ro and data on the same page can only go together) is writable
 static void map_image(module_t *m, const char *dir) {
@@ -563,6 +593,7 @@ static void map_image(module_t *m, const char *dir) {
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
+    dm_resolution_pair_cut(m);   // while the text area (and, on a front patch area build, before it) is still writable
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
     uint64_t po = m->patch_off & ~0x3FFFull;

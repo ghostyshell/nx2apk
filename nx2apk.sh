@@ -3,6 +3,8 @@
 #   ./nx2apk.sh check                               the tools this needs, and what is missing
 #   ./nx2apk.sh extract <game.nsp> <prod.keys>      ExeFS, icon and title id into work/ (add --romfs for the RomFS too, about the game's size)
 #   ./nx2apk.sh build                               rewritten modules, translated shaders and the APK, from work/
+#                                                   (add BUNDLE=1 to also pack mods/vksh/texpatch into the APK: a one-file
+#                                                    personal reinstall; only the RomFS stays external. Keep that APK private)
 #   ./nx2apk.sh install                             the APK and its files onto the phone over adb (and the RomFS if work/romfs exists)
 # Environment: WORK (default ./work), ANDROID_SDK, ANDROID_NDK, HACTOOL, DOTNET_ROOT, SPIRV_CROSS, PYTHON
 set -euo pipefail
@@ -104,7 +106,7 @@ build() {
     say "Building the APK"
     mkdir -p "$HERE/dm/android/build"
     rm -f "$HERE/dm/android/build/icon.png"; if [ -f "$WORK/icon.png" ]; then cp "$WORK/icon.png" "$HERE/dm/android/build/icon.png"; fi
-    GAME=$tid ANDROID_SDK=$SDK bash "$HERE/dm/android/build_apk.sh" | tail -1
+    GAME=$tid ANDROID_SDK=$SDK WORK=$WORK BUNDLE=${BUNDLE:-0} bash "$HERE/dm/android/build_apk.sh" | tail -1
     cp "$HERE/dm/android/build/dmc.apk" "$WORK/game.apk"
     say "Built $WORK/game.apk"
 }

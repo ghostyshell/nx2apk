@@ -106,6 +106,11 @@ Open **Devil May Cry** on the phone.
 
 Your keys never go to the phone, and `extract` deletes its temporary copy of them when it finishes.
 
+**One-file install.** `BUNDLE=1 ./nx2apk.sh build` also packs the rewritten modules and shaders into the APK
+(`work/mods`, `work/vksh`, `work/texpatch`); on first launch the app copies them into its own storage, so a
+reinstall is one APK plus the RomFS, no `adb push` needed. Keep that APK to yourself: it contains the game's
+rewritten code, which is why the tool never publishes or uploads it anywhere.
+
 ## Playing
 
 **Touch.** The left half of the screen is a stick that appears where you put your thumb. The right half has the
@@ -122,16 +127,26 @@ controller** by default:
   the game leaves the phone.
   The tiny letters inside the drawing of the Switch on the Controls screen stay as they are.
 - The bumpers are L / R, the triggers ZL / ZR, Menu is +, View or Back is -, and the sticks and D-pad work as
-  expected.
+  expected. On keyboards and controllers that expose the Switch's own + and - keys, those press the Switch's
+  + (start) and - (select / options).
+- The controller's Home button is ignored: it is not a game button, and pressing it never leaves the game for the
+  launcher.
 
 To play with Switch-style buttons instead (buttons by position, so the bottom button is the Switch's B, and the
 original pictures), set `DM_PAD_LAYOUT=switch` (see below).
 
-**Screen shape.** The game is drawn at the Switch's 16:9 shape and scaled to fit your screen, with black bars where
-the shapes differ (at the sides on taller phones, above and below on a 4:3 panel). Rendering it wider is not
-possible: Devil May Cry stretches its picture, movies included, to whatever shape it is given instead of showing
-more. `DM_SCALE` fills the screen anyway (see Options): `fill` stretches the 16:9 picture onto the whole panel,
-`crop` fills it keeping the shape and trims the sides.
+**Screen shape.** The game runs at your screen's own shape. It asks the system for the display resolution and sizes
+its window, its 3D render target and the present crop from it, so the app reports the panel's aspect (720 lines, the
+Switch's handheld mode; 1080 with `DM_OPMODE=1`). On a 19.5:9 phone that is 1520x720, and 3D scenes fill it.
+
+The one thing the game keeps fixed is the 3D camera: its projection is 16:9 whatever target it is given, which is
+why a wider picture used to come out stretched by 19% instead of showing more of the world. The host now corrects
+that projection as it replays frames, so 3D scenes show more at the sides and nothing is stretched.
+
+The game's 2D layer is mostly aspect-aware: the menus and their text keep their shape on a wider screen. What is
+drawn edge to edge is the video: the splash screens and the movie plane fill the whole panel, so on a panel that is
+not 16:9 they are still stretched by that same 19%. For a plain 16:9 picture with bars at the sides instead, tell
+the game to render 16:9 (`DM_DISPLAY=1280x720`) and letterbox it (`DM_SCALE=fit`).
 
 **Options.** Create a text file `Android/data/dev.nxandroid.dmc/files/env.txt` on the phone with one setting per
 line, then restart the app:
@@ -140,11 +155,29 @@ line, then restart the app:
 | --- | --- |
 | `DM_PAD_LAYOUT=switch` | Switch-style buttons: mapped by position (the bottom button is the Switch's B) and the game's original button pictures |
 | `DM_OPMODE=1` | The Switch's docked mode: sharper (1600x900) but too heavy to hold 60 fps on most phones in busy scenes |
-| `DM_SCALE=fill` | Stretch the picture onto the whole screen: a 4:3 panel gets a 4:3 picture (33% taller) |
-| `DM_SCALE=crop` | Fill the screen keeping the shape, trimming 12.5% from each side on a 4:3 panel |
-| `DM_DISPLAY=<w>x<h>` | Report this display resolution to the game (a game that sizes its render to it follows; DMC ignores it) |
+| `DM_SCALE=fit` | Letterbox the picture instead of filling the panel (with a 16:9 `DM_DISPLAY`) |
+| `DM_SCALE=fill` / `crop` | Present-side fallbacks for a panel whose shape the game cannot be given (stretch / fill and trim) |
+| `DM_DISPLAY=<w>x<h>` | Tell the game this display resolution instead of the panel's own shape (the app derives it from the screen; this overrides it) |
+| `DM_ASPECT=off` | Leave the 3D camera at the game's own 16:9 projection (see Screen shape) |
 
 For example, from the Mac: `adb shell 'echo DM_PAD_LAYOUT=switch > /sdcard/Android/data/dev.nxandroid.dmc/files/env.txt'`
+
+## Game-specific changes
+
+Each game's profile can carry small, documented departures from the generic frontend. Devil May Cry
+(`dm/games/0100E8000D5B8000/`) ships two:
+
+- **Standard Xbox face buttons** (`DM_PAD_DMC`, on by default in this app, clear it in `env.txt`): the game's own
+  Option → Controller Setup only offers Type A / B presets, and both keep jump on the bottom button (Switch B)
+  with sword and shoot elsewhere. The frontend therefore translates the standard Xbox layout onto the game's
+  Type A scheme: **Xbox A = jump** (game B), **Xbox Y = attack** (game X), **Xbox B = examine** and
+  **Xbox X = shoot** (the game uses one button for both, game A). The game stays on its default Type A.
+- **Swapped prompt art**: with inputs moved, the Xbox button pictures painted over the game's own would lie.
+  `prompts.tsv` carries a `# map: AB,XY` line and `prompts.py` swaps the art the same way (A↔B, X↔Y), so the
+  on-screen prompts match the buttons.
+
+When adding a game that needs its own face-button layout, follow the same two pieces: a `DM_PAD_<GAME>` branch
+in `key_btn` (`activity.c`) plus a `# map:` line in the game's `prompts.tsv`.
 
 ## Troubleshooting
 

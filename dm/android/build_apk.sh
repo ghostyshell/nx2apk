@@ -35,8 +35,19 @@ X
     "$BT/aapt2" compile --dir "$R" -o "$W/res.zip"; RES=(-R "$W/res.zip" --auto-add-overlay)
     sed 's|<application |<application android:icon="@mipmap/ic_launcher" |' "$HERE/apk/AndroidManifest.xml" > "$W/AndroidManifest.xml"; MAN=$W/AndroidManifest.xml
 fi
-"$BT/aapt2" link -o "$W/base.apk" --manifest "$MAN" -I "$SDK/platforms/android-34/android.jar" "${RES[@]}"
+# Optional data bundle (BUNDLE=1 WORK=<dir>): packs <dir>/{mods,vksh,texpatch} as APK assets; activity.c extracts
+# them into internal storage on first run, so a personal reinstall is one APK plus the RomFS. Personal installs
+# only — the mods are the game's own rewritten code, a bundled APK must never be what a public download serves.
+ASSETS=(); OUT=${OUT:-dmc.apk}
+if [ "${BUNDLE:-0}" = 1 ] && [ -d "${WORK:-}/mods" ]; then
+    A=$W/assets/bundle; mkdir -p "$A/mods"
+    cp -R "$WORK/mods/." "$A/mods/"
+    [ -d "$WORK/vksh" ] && { mkdir -p "$A/vksh"; find "$WORK/vksh" -maxdepth 1 -type f -exec cp -R {} "$A/vksh/" \; ; }
+    [ -d "$WORK/texpatch" ] && { mkdir -p "$A/texpatch"; cp -R "$WORK/texpatch/." "$A/texpatch/"; }
+    date +%s > "$A/stamp"; ASSETS=(-A "$W/assets"); OUT=${OUT:-dmc-bundled.apk}
+fi
+"$BT/aapt2" link -o "$W/base.apk" --manifest "$MAN" -I "$SDK/platforms/android-34/android.jar" ${ASSETS[@]+"${ASSETS[@]}"} "${RES[@]}"
 (cd "$W" && zip -q -r base.apk lib)
 "$BT/zipalign" -f -p 4 "$W/base.apk" "$W/aligned.apk"
-"$BT/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$HERE/build/dmc.apk" "$W/aligned.apk"
-echo "built $HERE/build/dmc.apk"
+"$BT/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$HERE/build/$OUT" "$W/aligned.apk"
+echo "built $HERE/build/$OUT"

@@ -4,10 +4,15 @@
 // which needs the MANAGE_EXTERNAL_STORAGE app op), the save and temp folders under the internal files folder. <external files>/env.txt sets further variables (KEY=VALUE lines);
 // the log goes to <external files>/dm.log
 #include <android/native_activity.h>
+#include <android/asset_manager.h>
+#include <android/configuration.h>
 #include <android/input.h>
 #include <android/looper.h>
 #include <android/window.h>
 #include <android/log.h>
+#include <dirent.h>
+#include <errno.h>
+#include <string.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +36,92 @@ static char g_ext[512], g_int[512];
 static AInputQueue *g_queue; static ALooper *g_looper; static pthread_mutex_t g_in_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_started;
 
+// ---------- Bundled data (optional) ----------
+// A build made with BUNDLE=1 packs the rewritten modules and shaders as APK assets (build_apk.sh), so a
+// personal reinstall is one APK plus the RomFS: on first run (or when the bundle's stamp changes) the assets
+// are extracted into internal storage and used instead of the folders under the external files dir. No
+// bundle -> the paths are exactly as before. Personal installs only: the bundle carries the game's own
+// rewritten code, it must never be what a public download serves (see README).
+static int g_bundle;
+
+static void rm_files(const char *dir) {
+    DIR *dp = opendir(dir); if (!dp) return;
+    struct dirent *e; char p[1024];
+    while ((e = readdir(dp))) { if (e->d_name[0] == '.') continue; snprintf(p, sizeof p, "%s/%s", dir, e->d_name); unlink(p); }
+    closedir(dp);
+}
+static int bundle_one(AAssetManager *am, const char *adir, const char *dest, int verbose) {
+    AAssetDir *d = AAssetManager_openDir(am, adir);
+    if (!d) { if (verbose) __android_log_print(ANDROID_LOG_INFO, "dm", "bundle: openDir %s failed", adir); return 0; }
+    const char *fn; int n = 0, seen = 0;
+    while ((fn = AAssetDir_getNextFileName(d))) {
+        seen++;
+        char apath[256]; snprintf(apath, sizeof apath, "%s/%s", adir, fn);   // open() resolves from the assets root, the enumerator returns bare names
+        AAsset *a = AAssetManager_open(am, apath, AASSET_MODE_STREAMING);
+        if (!a) { if (verbose) __android_log_print(ANDROID_LOG_INFO, "dm", "bundle: open %s failed", apath); continue; }
+        char p[1024]; snprintf(p, sizeof p, "%s/%s", dest, fn);
+        FILE *f = fopen(p, "w");
+        if (!f) { if (verbose) __android_log_print(ANDROID_LOG_INFO, "dm", "bundle: write %s failed: %s", p, strerror(errno)); AAsset_close(a); continue; }
+        char buf[65536]; int r; while ((r = AAsset_read(a, buf, sizeof buf)) > 0) fwrite(buf, 1, r, f);
+        fclose(f); AAsset_close(a); n++;
+    }
+    AAssetDir_close(d);
+    if (verbose) __android_log_print(ANDROID_LOG_INFO, "dm", "bundle: %s -> %d seen, %d copied", adir, seen, n);
+    return n;
+}
+static int bundle_extract(ANativeActivity *a) {
+    AAssetManager *am = a->assetManager;
+    AAsset *s = AAssetManager_open(am, "bundle/stamp", AASSET_MODE_BUFFER);
+    if (!s) { __android_log_print(ANDROID_LOG_INFO, "dm", "bundle: no stamp asset (am %p)", (void *)am); return 0; }
+    char stamp[128]; off_t n = AAsset_getLength64(s); if (n > (off_t)sizeof stamp - 1) n = sizeof stamp - 1;
+    memcpy(stamp, AAsset_getBuffer(s), n); stamp[n] = 0; AAsset_close(s);
+    char old[600]; snprintf(old, sizeof old, "%s/bundle.stamp", g_int);
+    FILE *f = fopen(old, "r"); char cur[128] = {0};
+    if (f) { size_t r = fread(cur, 1, sizeof cur - 1, f); cur[r] = 0; fclose(f); }
+    if (!strcmp(cur, stamp)) return 1;   // this exact bundle is already on disk
+    int total = 0;
+    const char *names[] = {"mods", "vksh", "texpatch"};
+    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+        char adir[64], dest[600];
+        snprintf(adir, sizeof adir, "bundle/%s", names[i]);
+        snprintf(dest, sizeof dest, "%s/%s", g_int, names[i]);
+        rm_files(dest); mkdir(dest, 0700);
+        total += bundle_one(am, adir, dest, total == 0);   // verbose on the first dir only
+    }
+    if (!total) return 0;
+    f = fopen(old, "w"); if (f) { fputs(stamp, f); fclose(f); }
+    __android_log_print(ANDROID_LOG_INFO, "dm", "extracted bundle: %d files into %s", total, g_int);
+    return 1;
+}
+
+// The screen's shape, so the game renders at the device's own aspect with no env.txt: DM_DISPLAY = the surface's landscape aspect at 720 lines
+// (the Switch's handheld mode: docked's 1600x900 scene does not hold 60 fps on phones once the GPU is thermally capped), 1080 with DM_OPMODE=1.
+// The surface, not the screen: the game's picture is presented to the window, so its shape is the one that must match (the window is narrower than the
+// panel on phones with a cutout). The window arrives right after onCreate; until it does, the screen's dp shape is the stand-in. env.txt wins.
+static AAssetManager *g_am;   // set in onCreate: the dp fallback of display_default
+static void display_default(AAssetManager *am) {
+    if (getenv("DM_DISPLAY")) return;
+    int w = 0, h = 0;
+    for (int i = 0; i < 1600; i++) {   // the surface comes up a few seconds into onCreate on some phones
+        ANativeWindow *win = dm_android_window;
+        if (win) { w = ANativeWindow_getWidth(win); h = ANativeWindow_getHeight(win); }
+        if (w > 0 && h > 0) break;
+        usleep(5000);
+    }
+    if (w <= 0 || h <= 0) {   // no window yet: the screen's dp shape, whose ratio is the pixel ratio
+        AConfiguration *c = am ? AConfiguration_new() : NULL; if (!c) return;
+        AConfiguration_fromAssetManager(c, am);
+        w = AConfiguration_getScreenWidthDp(c); h = AConfiguration_getScreenHeightDp(c);
+        AConfiguration_delete(c);
+        if (w <= 0 || h <= 0) return;
+    }
+    if (w < h) { int t = w; w = h; h = t; }   // the game runs in landscape
+    const char *op = getenv("DM_OPMODE");
+    int lines = op && !strcmp(op, "1") ? 1080 : 720;
+    char buf[32]; snprintf(buf, sizeof buf, "%dx%d", (int)(((long)w * lines / h + 1) & ~1), lines);
+    setenv("DM_DISPLAY", buf, 1);
+    __android_log_print(ANDROID_LOG_INFO, "dm", "display %dx%d → DM_DISPLAY=%s", w, h, buf);
+}
 static void env_file(void) {
     char p[600]; snprintf(p, sizeof p, "%s/env.txt", g_ext);
     FILE *f = fopen(p, "r"); if (!f) return;
@@ -49,13 +140,15 @@ static void *host_thread(void *arg) {
     snprintf(p, sizeof p, "%s/dm.log", g_ext); freopen(p, "w", stderr); setvbuf(stderr, NULL, _IOLBF, 0);
     snprintf(p, sizeof p, "%s/save", g_int); mkdir(p, 0700); setenv("DM_SAVE", p, 0);
     snprintf(p, sizeof p, "%s/temp", g_int); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
-    snprintf(p, sizeof p, "%s/vksh", g_ext); setenv("DM_VK_SHADERS", p, 0);
+    snprintf(p, sizeof p, "%s/vksh", g_bundle ? g_int : g_ext); setenv("DM_VK_SHADERS", p, 0);
     setenv("DM_ROMFS", "/sdcard/nx/dmc/romfs", 0); setenv("DM_FS", "1", 0); setenv("DM_AUDIO", "1", 0);
+    setenv("DM_PAD_DMC", "1", 0);   // this app is Devil May Cry: ship the standard Xbox face-button layout (env.txt can clear it)
     // The Switch's handheld mode (720p): docked renders the scene at 1600x900, which the S10e's GPU cannot hold at 60 fps in DMC's heaviest scenes once Samsung's
     // thermal policy caps it at 377 MHz; handheld does. DM_OPMODE=1 in env.txt for docked
     setenv("DM_OPMODE", "0", 0);
+    display_default(g_am);   // on this thread, not onCreate's: the window callback arrives on the UI thread, which must stay free
     chdir(g_int);
-    static char mods[600]; snprintf(mods, sizeof mods, "%s/mods", g_ext);
+    static char mods[600]; snprintf(mods, sizeof mods, "%s/mods", g_bundle ? g_int : g_ext);
     char *argv[] = {"dm", mods, NULL};
     __android_log_print(ANDROID_LOG_INFO, "dm", "host starting (modules %s, log %s/dm.log)", mods, g_ext);
     int r = main(2, argv);
@@ -71,12 +164,23 @@ static void *host_thread(void *arg) {
 static uint64_t g_keys, g_hat, g_touch_btn; static float g_ax[8]; static int32_t g_touch_lx, g_touch_ly;
 static uint64_t key_btn(int32_t k) {
     static int label = -1; if (label < 0) { const char *e = getenv("DM_PAD_LAYOUT"); label = !(e && !strcasecmp(e, "switch")); }
+    static int dmc = -1; if (dmc < 0) { const char *e = getenv("DM_PAD_DMC"); dmc = e && !strcmp(e, "1"); }
+    if (label && dmc) {
+        // Devil May Cry's own Type A scheme is action(jump) / sword / shoot+examine on B / X / A: translate the
+        // standard Xbox layout onto it — Xbox A jumps, Y swings, B examines, X shoots (the game examines and
+        // shoots with one button, so B and X both reach it; Switch Y has no role). texpatch swaps the art to match.
+        switch (k) {
+            case AKEYCODE_BUTTON_A: return DM_BTN_B;
+            case AKEYCODE_BUTTON_B: case AKEYCODE_BUTTON_X: return DM_BTN_A;
+            case AKEYCODE_BUTTON_Y: return DM_BTN_X;
+        }
+    }
     switch (k) {
         case AKEYCODE_BUTTON_A: return label ? DM_BTN_A : DM_BTN_B; case AKEYCODE_BUTTON_B: return label ? DM_BTN_B : DM_BTN_A;
         case AKEYCODE_BUTTON_X: return label ? DM_BTN_X : DM_BTN_Y; case AKEYCODE_BUTTON_Y: return label ? DM_BTN_Y : DM_BTN_X;
         case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
         case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: case AKEYCODE_BACK: return DM_BTN_MINUS;
-        case AKEYCODE_PLUS: return DM_BTN_PLUS;   // a keyboard's + presses the Switch's + (START); the handheld's Start button is bound to Home by its firmware
+        case AKEYCODE_PLUS: return DM_BTN_PLUS; case AKEYCODE_MINUS: return DM_BTN_MINUS;   // a keyboard's + / - press the Switch's + / - (start / select-options); controllers whose firmware binds Start to Home are covered by their + / - and View / Select instead
         case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS;
         case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT; case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN;
     }
@@ -130,8 +234,10 @@ static int input_cb(int fd, int events, void *data) {
         if (AInputQueue_preDispatchEvent(g_queue, e)) continue;
         int handled = 0, src = AInputEvent_getSource(e);
         if (AInputEvent_getType(e) == AINPUT_EVENT_TYPE_KEY) {
-            uint64_t b = key_btn(AKeyEvent_getKeyCode(e));
+            int32_t k = AKeyEvent_getKeyCode(e);
+            uint64_t b = key_btn(k);
             if (b) { if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN) g_keys |= b; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_keys &= ~b; pad_publish(); handled = 1; }
+            else if (k == AKEYCODE_HOME || k == AKEYCODE_BUTTON_MODE) handled = 1;   // the controller's Home button: no game button (the host has none) and it must not leave the game for the launcher
         } else if (AInputEvent_getType(e) == AINPUT_EVENT_TYPE_MOTION) {
             if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK) {
                 g_ax[0] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0); g_ax[1] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
@@ -186,7 +292,9 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(g_int, sizeof g_int, "%s", a->internalDataPath);
     mkdir(g_ext, 0700);
     env_file();   // before either thread starts: the input thread reads DM_PAD_LAYOUT, the host the rest (its defaults above do not overwrite these)
-    { const char *l = getenv("DM_PAD_LAYOUT"); char p[600]; snprintf(p, sizeof p, "%s/texpatch", g_ext); if (!(l && !strcasecmp(l, "switch"))) setenv("DM_TEXPATCH", p, 0); }   // Xbox button pictures
+    g_am = a->assetManager;   // the host thread derives DM_DISPLAY once it has the window
+    g_bundle = bundle_extract(a);   // before either thread starts: the host thread picks the mods/shaders source from this
+    { const char *l = getenv("DM_PAD_LAYOUT"); char p[600]; snprintf(p, sizeof p, "%s/texpatch", g_bundle ? g_int : g_ext); if (!(l && !strcasecmp(l, "switch"))) setenv("DM_TEXPATCH", p, 0); }   // Xbox button pictures
     pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 16 << 20);
     pthread_create(&th, NULL, input_thread, NULL); pthread_detach(th);
     pthread_create(&th, &at, host_thread, NULL); pthread_detach(th);

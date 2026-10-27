@@ -62,10 +62,23 @@ def main():
     tsv, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
     icons = {k.upper(): png_rgba(open(ICONS.format(k), 'rb').read()) for k in 'abxy'}
+    # "# map: AB,XY" in the tsv swaps which Xbox art each game letter gets: the app's pad remap
+    # (DM_PAD_DMC) changes the button the player actually presses for that game letter.
+    swaps = []
+    for ln in open(tsv):
+        if ln.startswith('#') and 'map:' in ln:
+            for pair in ln.split('map:')[1].split('#')[0].strip().split(','):
+                if len(pair) == 2: swaps.append((pair[0].lower(), pair[1].lower()))
+    def mapped(k):
+        for a, b in swaps:
+            if k == a: k = b
+            elif k == b: k = a
+        return k
     by_hash = {}
     for ln in open(tsv):
         if ln.startswith('#') or not ln.strip(): continue
         h, w, ht, k, x, y, r = ln.split('\t')[:7]
+        k = mapped(k.lower()).upper()
         by_hash.setdefault((h, int(w), int(ht)), (int(w), int(ht), []))[2].append((k, float(x), float(y), float(r)))
     sized = {}
     written = 0

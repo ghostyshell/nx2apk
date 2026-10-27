@@ -1,6 +1,8 @@
 # Switch button pictures in the game's textures, replaced with Xbox ones (dm/android/tools/prompts.py). Found by template matching in every language's
 # pack/ctrl_*_nx.pack images (the Controls screens); hash = FNV-1a 64 of the texture's BC7 level-0 bytes, as nvn_vk.c tex_upload computes it
 # hash	width	height	button	centre x	centre y	radius	source
+# map: AB,XY  — the app remaps the Xbox pad onto the game's Type A scheme (Xbox A jumps = game B, Xbox Y swings = game X,
+# Xbox B examines and X shoots = game A), so the Xbox art painted over each game letter is swapped the same way.
 014a1e16a9710885	512	448	A	259	155	19	ctrl_mssn_nx
 014a1e16a9710885	512	448	A	461	380	19	ctrl_mssn_nx
 014a1e16a9710885	512	448	B	224	210	19	ctrl_mssn_nx
