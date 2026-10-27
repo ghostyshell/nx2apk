@@ -9,7 +9,7 @@
                  android:requestLegacyExternalStorage="true" android:extractNativeLibs="true">
         <activity android:name="android.app.NativeActivity" android:exported="true" android:screenOrientation="sensorLandscape"
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
-                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen" android:launchMode="singleTask">
+                  android:theme="@style/GameTheme" android:launchMode="singleTask">
             <meta-data android:name="android.app.lib_name" android:value="dm" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

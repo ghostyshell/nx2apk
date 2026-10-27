@@ -17,8 +17,10 @@ GAME=${GAME:-0100E8000D5B8000} APK=1 bash "$HERE/build.sh"
 W=$HERE/build/apk; rm -rf "$W"; mkdir -p "$W/lib/arm64-v8a"
 cp "$HERE/build/libdm.so" "$W/lib/arm64-v8a/"
 MAN=$HERE/apk/AndroidManifest.xml; RES=()
+R=$W/res; mkdir -p "$R"
+[ -d "$HERE/apk/res" ] && cp -R "$HERE/apk/res/." "$R/"   # the app's own resources (the full-screen theme with the camera cutout)
 if [ -f "$HERE/build/icon.png" ] || [ -f "$HERE/build/icon_cropped.png" ]; then
-    R=$W/res; mkdir -p "$R/mipmap-xxxhdpi" "$R/drawable-nodpi" "$R/drawable" "$R/mipmap-anydpi-v26" "$R/values"
+    mkdir -p "$R/mipmap-xxxhdpi" "$R/drawable-nodpi" "$R/drawable" "$R/mipmap-anydpi-v26" "$R/values"
     ART=$HERE/build/icon_cropped.png; [ -f "$ART" ] || ART=$HERE/build/icon.png
     cp "$ART" "$R/mipmap-xxxhdpi/ic_launcher.png"; cp "$ART" "$R/drawable-nodpi/ic_art.png"
     printf '<resources><color name="icon_bg">#391219</color></resources>\n' > "$R/values/colors.xml"
@@ -32,8 +34,10 @@ X
     <foreground android:drawable="@drawable/ic_foreground" />
 </adaptive-icon>
 X
-    "$BT/aapt2" compile --dir "$R" -o "$W/res.zip"; RES=(-R "$W/res.zip" --auto-add-overlay)
     sed 's|<application |<application android:icon="@mipmap/ic_launcher" |' "$HERE/apk/AndroidManifest.xml" > "$W/AndroidManifest.xml"; MAN=$W/AndroidManifest.xml
+fi
+if [ -d "$HERE/apk/res" ] || [ -f "$HERE/build/icon.png" ] || [ -f "$HERE/build/icon_cropped.png" ]; then
+    "$BT/aapt2" compile --dir "$R" -o "$W/res.zip"; RES=(-R "$W/res.zip" --auto-add-overlay)
 fi
 # Optional data bundle (BUNDLE=1 WORK=<dir>): packs <dir>/{mods,vksh,texpatch} as APK assets; activity.c extracts
 # them into internal storage on first run, so a personal reinstall is one APK plus the RomFS. Personal installs

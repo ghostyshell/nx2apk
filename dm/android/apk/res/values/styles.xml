@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The game is full screen across the whole panel, the camera cutout included: without this the window stops at the
+     cutout (on the S10e that is 116 px of the 2280 wide panel), the game is told a narrower shape and the picture is
+     scaled up into it. shortEdges is what Android 9 to 11 need; always (12+) is set by the same attribute on those. -->
+<resources>
+    <style name="GameTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

@@ -6,6 +6,7 @@
 #include <android/native_activity.h>
 #include <android/asset_manager.h>
 #include <android/configuration.h>
+#include <math.h>
 #include <android/input.h>
 #include <android/looper.h>
 #include <android/window.h>
@@ -94,8 +95,9 @@ static int bundle_extract(ANativeActivity *a) {
     return 1;
 }
 
-// The screen's shape, so the game renders at the device's own aspect with no env.txt: DM_DISPLAY = the surface's landscape aspect at 720 lines
-// (the Switch's handheld mode: docked's 1600x900 scene does not hold 60 fps on phones once the GPU is thermally capped), 1080 with DM_OPMODE=1.
+// The screen's shape, so the game renders at the device's own aspect with no env.txt: DM_DISPLAY = the surface's landscape aspect, in a pixel budget
+// rather than a fixed line count. The budget is the Switch's handheld/ docked mode (1280x720 / 1600x900): those hold 60 fps, and since the pixel count
+// is what the GPU pays for, a 19.5:9 panel renders 1394x660 (upscaled by the present) instead of 1520x720, which DMC's heaviest scenes drop into the 40s.
 // The surface, not the screen: the game's picture is presented to the window, so its shape is the one that must match (the window is narrower than the
 // panel on phones with a cutout). The window arrives right after onCreate; until it does, the screen's dp shape is the stand-in. env.txt wins.
 static AAssetManager *g_am;   // set in onCreate: the dp fallback of display_default
@@ -117,8 +119,13 @@ static void display_default(AAssetManager *am) {
     }
     if (w < h) { int t = w; w = h; h = t; }   // the game runs in landscape
     const char *op = getenv("DM_OPMODE");
-    int lines = op && !strcmp(op, "1") ? 1080 : 720;
-    char buf[32]; snprintf(buf, sizeof buf, "%dx%d", (int)(((long)w * lines / h + 1) & ~1), lines);
+    int docked = op && !strcmp(op, "1");
+    double aspect = (double)w / h;
+    int lines = (int)sqrt((docked ? 1600.0 * 900 : 1280.0 * 720) / aspect);   // the mode's pixel budget at this shape
+    int cap = docked ? 900 : 720;                                            // and never more lines than the mode draws today
+    if (lines > cap) lines = cap;
+    if (lines < 2) return;
+    char buf[32]; snprintf(buf, sizeof buf, "%dx%d", (int)(((long)lines * w / h + 1) & ~1), lines);
     setenv("DM_DISPLAY", buf, 1);
     __android_log_print(ANDROID_LOG_INFO, "dm", "display %dx%d → DM_DISPLAY=%s", w, h, buf);
 }

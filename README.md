@@ -135,9 +135,10 @@ controller** by default:
 To play with Switch-style buttons instead (buttons by position, so the bottom button is the Switch's B, and the
 original pictures), set `DM_PAD_LAYOUT=switch` (see below).
 
-**Screen shape.** The game runs at your screen's own shape. It asks the system for the display resolution and sizes
-its window, its 3D render target and the present crop from it, so the app reports the panel's aspect (720 lines, the
-Switch's handheld mode; 1080 with `DM_OPMODE=1`). On a 19.5:9 phone that is 1520x720, and 3D scenes fill it.
+**Screen shape.** The game runs at your screen's own shape, across the whole panel, the camera cutout included. It asks
+the system for the display resolution and sizes its window, its 3D render target and the present crop from it, so the
+app reports the panel's aspect in the Switch's pixel budget (the handheld mode's 1280x720, the docked 1600x900 with
+`DM_OPMODE=1`). On a 19.5:9 phone that is 1394x660, upscaled to the panel by the present, and 3D scenes fill it.
 
 The one thing the game keeps fixed is the 3D camera: its projection is 16:9 whatever target it is given, which is
 why a wider picture used to come out stretched by 19% instead of showing more of the world. The host now corrects
